@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import shlex
 import subprocess
 from pathlib import Path
@@ -20,6 +21,86 @@ def _run(cmd: list[str]) -> None:
     res = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if res.returncode != 0:
         raise EditorError(f"ffmpeg failed ({res.returncode}): {res.stderr[-800:]}")
+
+
+_HAS_SUBTITLE_FILTER: bool | None = None
+
+
+def _has_subtitle_filter() -> bool:
+    """Return True iff this ffmpeg build has the ass/subtitles filter (libass)."""
+    global _HAS_SUBTITLE_FILTER
+    if _HAS_SUBTITLE_FILTER is not None:
+        return _HAS_SUBTITLE_FILTER
+    try:
+        res = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-filters"],
+            capture_output=True, text=True, check=False,
+        )
+    except FileNotFoundError:
+        _HAS_SUBTITLE_FILTER = False
+        return False
+    # Filter listing format: " .. <name> ..."
+    _HAS_SUBTITLE_FILTER = bool(re.search(r"^\s*\.\.\s+(ass|subtitles)\s+", res.stdout, re.M))
+    if not _HAS_SUBTITLE_FILTER:
+        log.warning(
+            "ffmpeg has no libass support — subtitles will be skipped. "
+            "Reinstall full ffmpeg with: brew uninstall --ignore-dependencies ffmpeg && brew install ffmpeg"
+        )
+    return _HAS_SUBTITLE_FILTER
+
+
+_SRT_TIME_RE = re.compile(
+    r"(\d+):(\d+):(\d+)[,.](\d+)\s*-->\s*(\d+):(\d+):(\d+)[,.](\d+)"
+)
+
+
+def _to_ass_time(h: str, m: str, s: str, ms: str) -> str:
+    return f"{int(h)}:{int(m):02d}:{int(s):02d}.{int(ms) // 10:02d}"
+
+
+def _srt_to_ass(srt_text: str, out_path: Path, *, font_size: int, play_w: int, play_h: int) -> Path:
+    """Convert SRT text to an ASS subtitle file with styling baked in.
+
+    Using ASS instead of force_style= avoids ffmpeg's finicky filter-arg
+    escaping — the subtitles filter's force_style handling is inconsistent
+    across ffmpeg builds once commas are involved.
+    """
+    header = (
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        f"PlayResX: {play_w}\n"
+        f"PlayResY: {play_h}\n"
+        "WrapStyle: 2\n"
+        "ScaledBorderAndShadow: yes\n"
+        "\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, "
+        "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, "
+        "BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        f"Style: Default,Arial,{font_size},&H00FFFFFF,&H00000000,&H80000000,"
+        "-1,0,0,0,100,100,0,0,1,3,1,2,60,60,180,1\n"
+        "\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+    )
+    events: list[str] = []
+    for block in re.split(r"\r?\n\r?\n", srt_text.strip()):
+        lines = [ln for ln in block.splitlines() if ln.strip()]
+        if len(lines) < 2:
+            continue
+        time_idx = next((i for i, ln in enumerate(lines) if "-->" in ln), None)
+        if time_idx is None:
+            continue
+        match = _SRT_TIME_RE.search(lines[time_idx])
+        if not match:
+            continue
+        g = match.groups()
+        start, end = _to_ass_time(*g[:4]), _to_ass_time(*g[4:])
+        text = " ".join(lines[time_idx + 1:]).replace("\n", r"\N").replace(",", "\\,")
+        events.append(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{text}")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(header + "\n".join(events) + "\n", encoding="utf-8")
+    return out_path
 
 
 def _probe_duration(path: Path) -> float:
@@ -73,18 +154,28 @@ def assemble(
         "-c:a", "copy", str(portrait),
     ])
 
-    # Step 3 — burn subtitles (or copy through)
-    if srt_path and srt_path.exists() and srt_path.stat().st_size > 0:
+    # Step 3 — burn subtitles as ASS (styling baked into the file; no filter-arg escaping).
+    # Gracefully skip if this ffmpeg build lacks libass.
+    if (
+        srt_path and srt_path.exists() and srt_path.stat().st_size > 0
+        and _has_subtitle_filter()
+    ):
         fontsize = int(cfg.get("subtitle_font_size", 48))
-        # ffmpeg filter-arg value: commas (and colons inside paths) must be escaped
-        # with backslash. Absolute macOS paths have no colons, so only commas matter.
-        style = f"FontSize={fontsize}\\,Alignment=2\\,Outline=2\\,Shadow=1\\,MarginV=120"
-        sub_arg = f"subtitles={srt_path.as_posix()}:force_style={style}"
+        ass_path = srt_path.with_suffix(".ass")
+        _srt_to_ass(
+            srt_path.read_text(encoding="utf-8"),
+            ass_path,
+            font_size=fontsize,
+            play_w=w, play_h=h,
+        )
         _run([
             "ffmpeg", "-y", "-i", str(portrait),
-            "-vf", sub_arg, "-c:a", "copy", str(subbed),
+            "-vf", f"ass={ass_path.as_posix()}",
+            "-c:a", "copy", str(subbed),
         ])
     else:
+        if srt_path and srt_path.exists() and srt_path.stat().st_size > 0:
+            log.warning("Subtitles produced but skipped (no libass in this ffmpeg build).")
         _run(["ffmpeg", "-y", "-i", str(portrait), "-c", "copy", str(subbed)])
 
     # Step 4 — composite overlay PNG
