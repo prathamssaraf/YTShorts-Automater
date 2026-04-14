@@ -76,7 +76,10 @@ def assemble(
     # Step 3 — burn subtitles (or copy through)
     if srt_path and srt_path.exists() and srt_path.stat().st_size > 0:
         fontsize = int(cfg.get("subtitle_font_size", 48))
-        sub_arg = f"subtitles='{srt_path.as_posix()}':force_style='FontSize={fontsize},Alignment=2,Outline=2,Shadow=1'"
+        # ffmpeg filter-arg value: commas (and colons inside paths) must be escaped
+        # with backslash. Absolute macOS paths have no colons, so only commas matter.
+        style = f"FontSize={fontsize}\\,Alignment=2\\,Outline=2\\,Shadow=1\\,MarginV=120"
+        sub_arg = f"subtitles={srt_path.as_posix()}:force_style={style}"
         _run([
             "ffmpeg", "-y", "-i", str(portrait),
             "-vf", sub_arg, "-c:a", "copy", str(subbed),
