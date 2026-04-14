@@ -51,18 +51,29 @@ def render_overlay(
     t2 = m.get("team2", {}) or {}
     result = m.get("result", "")
 
-    # --- Top score bar
-    bar_h = 180
-    _rounded_rect(draw, (40, 40, w - 40, 40 + bar_h), radius=24, fill=(10, 10, 10, alpha))
-    font_team = _load_font(52)
-    font_result = _load_font(34)
+    t1_label = t1.get("abbr") or t1.get("name") or ""
+    t2_label = t2.get("abbr") or t2.get("name") or ""
+    t1_score = t1.get("score") or ""
+    t2_score = t2.get("score") or ""
+    t1_overs = f"({t1.get('overs')})" if t1.get("overs") else ""
+    t2_overs = f"({t2.get('overs')})" if t2.get("overs") else ""
 
-    line1 = f"{t1.get('name','Team 1')[:22]}  {t1.get('score','')}"
-    line2 = f"{t2.get('name','Team 2')[:22]}  {t2.get('score','')}"
-    draw.text((70, 58), line1, fill=(255, 255, 255, 255), font=font_team)
-    draw.text((70, 115), line2, fill=(255, 255, 255, 255), font=font_team)
-    if result:
-        draw.text((70, 175), result[:60], fill=(255, 220, 90, 255), font=font_result)
+    # Only draw the top bar if we actually have team identifiers — no placeholder
+    # "Team 1 / Team 2" text when the scorecard fetch fell back to a stub.
+    if t1_label or t2_label:
+        bar_h = 180
+        _rounded_rect(draw, (40, 40, w - 40, 40 + bar_h), radius=24, fill=(10, 10, 10, alpha))
+        font_team = _load_font(52)
+        font_result = _load_font(34)
+
+        if t1_label:
+            line1 = f"{t1_label[:24]}  {t1_score} {t1_overs}".strip()
+            draw.text((70, 58), line1, fill=(255, 255, 255, 255), font=font_team)
+        if t2_label:
+            line2 = f"{t2_label[:24]}  {t2_score} {t2_overs}".strip()
+            draw.text((70, 115), line2, fill=(255, 255, 255, 255), font=font_team)
+        if result:
+            draw.text((70, 175), result[:60], fill=(255, 220, 90, 255), font=font_result)
 
     # --- Bottom-left player card
     card_w, card_h = 720, 210
