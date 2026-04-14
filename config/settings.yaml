@@ -1,0 +1,95 @@
+# Cricket YouTube Shorts — central configuration
+# All paths are resolved relative to the repository root unless absolute.
+
+schedule:
+  check_interval_minutes: 30
+  ipl_series_id: "ipl-2026-1510719"
+
+data:
+  espncricinfo_rss: "https://www.espncricinfo.com/rss/content/story/feeds/6.xml"
+  cricbuzz_rss: "https://www.cricbuzz.com/rss-feeds/cricket-news"
+  news_max_articles: 10
+  news_recency_hours: 6
+  scorecard_innings_limit: 2
+  marquee_players:
+    - "Virat Kohli"
+    - "Rohit Sharma"
+    - "MS Dhoni"
+    - "Jasprit Bumrah"
+    - "Hardik Pandya"
+    - "Ravindra Jadeja"
+    - "KL Rahul"
+    - "Suryakumar Yadav"
+    - "Rishabh Pant"
+    - "Shubman Gill"
+    - "Rashid Khan"
+    - "Mohammed Siraj"
+
+youtube:
+  # Search backend is API-key-free: channel RSS feeds + yt-dlp search merged.
+  # OAuth (config/client_secrets.json) is only needed for the UPLOAD step.
+  search_results_to_evaluate: 8
+  preferred_channels:                         # polled via public RSS, no key needed
+    - "UCiWrjBhlICf_L_RK5y6Vrxw"              # ICC
+    - "UCmqvKoNO1bECOHEMqwTUQMQ"              # IPL
+    - "UCXd3xVxSfGQFJsKGmqC9fVQ"              # Cricbuzz
+  min_views: 5000
+  max_duration_seconds: 300
+  cache_file: "workspace/youtube_search_cache.json"
+  cache_ttl_seconds: 7200
+
+downloader:
+  format: "bestvideo[height<=1080]+bestaudio/best"
+  output_template: "workspace/downloads/%(id)s.%(ext)s"
+  rate_limit: "5M"
+  retries: 3
+
+video:
+  output_resolution: [1080, 1920]
+  target_duration_seconds: 55
+  min_clip_duration_seconds: 15
+  max_clip_duration_seconds: 55
+  subtitle_font_size: 48
+  subtitle_font: "Arial-Bold"
+  subtitle_position: "bottom"
+  overlay_position: "top"
+  overlay_opacity: 0.85
+  music_volume: 0.20
+  commentary_volume: 1.0
+
+transcription:
+  language: "en"
+  output_format: "srt"
+  whisper_cpp_binary: "vendor/whisper.cpp/main"
+  whisper_model_path: "vendor/whisper.cpp/models/ggml-large-v3.bin"
+  fallback_model_path: "vendor/whisper.cpp/models/ggml-base.en.bin"
+
+music:
+  model: "facebook/musicgen-small"
+  duration_seconds: 60
+  prompt_template: "energetic cricket sports hype music, {mood}, no lyrics, background"
+  output_dir: "workspace/audio"
+
+llm:
+  host: "http://localhost:11434"
+  model: "llama3.2"                           # override via settings if you pulled another
+  fallback_model: "llama3.2"
+  temperature: 0.3
+  max_tokens: 1000
+  request_timeout_seconds: 120
+  json_retries: 3
+
+upload:
+  credentials_file: "config/youtube_credentials.json"
+  client_secrets_file: "config/client_secrets.json"
+  category_id: "17"                           # Sports
+  privacy_status: "public"                    # public | unlisted | private
+  made_for_kids: false
+  tags_max: 15
+  description_footer: "\n\nAll cricket content for entertainment purposes. #Shorts #Cricket #IPL2026"
+
+logging:
+  log_file: "logs/runs.jsonl"
+  keep_workspace_on_failure: true
+  keep_workspace_on_success: false
+  state_file: "workspace/last_match_state.json"

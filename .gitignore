@@ -1,0 +1,23 @@
+# Local install roots
+.venv/
+vendor/
+workspace/
+
+# Per-run logs (personal data — don't commit)
+logs/*.jsonl
+
+# Secrets
+config/youtube_credentials.json
+config/client_secrets.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Claude Code local settings
+.claude/
+
+# OS
+.DS_Store
