@@ -31,13 +31,18 @@ Cricket YouTube Shorts — run.sh
 Usage:
   ./run.sh                         Bootstrap + run once (auto-picks latest completed match)
   ./run.sh --match-id <id>         Run for a specific cricinfo match id
+  ./run.sh --match-id <id> --count 3
+                                   Produce 3 distinct Shorts from one match
+                                   (each featuring a different player/moment)
   ./run.sh --watch                 Run the polling trigger loop
+  ./run.sh --watch --count 3       Polling loop that makes 3 Shorts per completed match
   ./run.sh --dry-run               Run every stage except YouTube upload
   ./run.sh --bootstrap-only        Just set up venv + whisper.cpp, do not run
   ./run.sh --cleanup               Remove .venv, vendor/, workspace/ (keeps source + logs)
   ./run.sh --help                  Show this message
 
-Any flags after "--" are forwarded verbatim to pipeline/orchestrator.py.
+To process several matches in a row, just shell-loop:
+  for m in 1527693 1527694 1527695; do ./run.sh --match-id "$m" --dry-run; done
 EOF
 }
 

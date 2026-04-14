@@ -11,14 +11,14 @@ from typing import Any
 
 from . import REPO_ROOT
 from .config import load_settings, resolve_path
-from .data.context_builder import build_context, keywords_for_news
+from .data.context_builder import MatchContext, build_context, keywords_for_news
 from .data.news_collector import fetch_news
 from .data.scorecard_collector import fetch_scorecard
-from .intelligence.decision_maker import pick_video, plan_short
+from .intelligence.decision_maker import ShortPlan, pick_video, plan_shorts
 from .logging.run_logger import RunLogger
 from .upload.youtube_uploader import UploadError, upload
-from .video.downloader import VideoUnavailableError, download
-from .video.editor import EditorError, assemble
+from .video.downloader import download
+from .video.editor import assemble
 from .video.music_generator import generate_music
 from .video.overlay_renderer import compose_player_stat, render_overlay
 from .video.scene_detector import select_window
@@ -33,11 +33,16 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--match-id", help="Run for a specific match id.")
     parser.add_argument("--watch", action="store_true", help="Run the polling trigger loop.")
     parser.add_argument("--dry-run", action="store_true", help="Skip YouTube upload.")
-    parser.add_argument("--keep-workspace", action="store_true", help="Do not clean workspace on success.")
+    parser.add_argument("--count", type=int, default=1,
+                        help="Produce N distinct Shorts from this match (each featuring a different player).")
+    parser.add_argument("--keep-workspace", action="store_true",
+                        help="Do not clean workspace when done.")
     return parser.parse_args(argv)
 
 
-def _cleanup_workspace(success: bool) -> None:
+def _cleanup_workspace(success: bool, force_keep: bool = False) -> None:
+    if force_keep:
+        return
     cfg = load_settings()["logging"]
     keep_on_fail = cfg.get("keep_workspace_on_failure", True)
     keep_on_ok = cfg.get("keep_workspace_on_success", False)
@@ -66,33 +71,21 @@ def _write_srt_file(run_id: str, srt_text: str) -> Path | None:
     return path
 
 
-def process_match(match: dict[str, Any], *, dry_run: bool = False) -> dict[str, Any]:
-    """Run the full pipeline for a single match. Returns a summary dict."""
+def _produce_one_short(
+    *,
+    match_id: str,
+    scorecard: dict[str, Any],
+    plan: ShortPlan,
+    dry_run: bool,
+) -> dict[str, Any]:
+    """Run everything *after* data-collection/planning for one ShortPlan."""
     runlog = RunLogger()
-    match_id = str(match.get("match_id") or match.get("id") or "")
     try:
-        if runlog.has_processed_match(match_id):
-            log.info("match %s already processed successfully — skipping.", match_id)
-            runlog.set("status", "skipped_duplicate")
-            runlog.finish()
-            return {"status": "skipped_duplicate", "match_id": match_id}
-
-        # --- Stage 2: data
-        runlog.start_stage("data_collection")
-        scorecard = fetch_scorecard(match_id)
-        keywords = keywords_for_news(scorecard)
-        news = fetch_news(keywords=keywords)
-        ctx = build_context(scorecard, news)
         runlog.set("match", {
             "id": match_id,
             "description": scorecard.get("match", {}).get("description", ""),
             "result": scorecard.get("match", {}).get("result", ""),
         })
-        runlog.end_stage("data_collection")
-
-        # --- Stage 3: decision (part 1)
-        runlog.start_stage("llm_decision")
-        plan = plan_short(ctx)
         runlog.update("decision", {
             "featured_player": plan.featured_player,
             "featured_moment": plan.featured_moment,
@@ -100,9 +93,8 @@ def process_match(match: dict[str, Any], *, dry_run: bool = False) -> dict[str, 
             "llm_reasoning": plan.llm_reasoning,
             "chosen_title": plan.chosen_title,
         })
-        runlog.end_stage("llm_decision")
 
-        # --- Stage 4a: youtube search
+        # YouTube search
         runlog.start_stage("youtube_search")
         searcher = YouTubeSearcher()
         query = f"{plan.featured_player} {plan.featured_moment.get('type','highlight')} IPL 2026"
@@ -114,11 +106,13 @@ def process_match(match: dict[str, Any], *, dry_run: bool = False) -> dict[str, 
         runlog.end_stage("youtube_search")
 
         if not candidates:
-            raise RuntimeError("no YouTube candidates found (check api key / network)")
+            raise RuntimeError("no YouTube candidates found")
 
-        # --- Stage 3: decision (part 2) — pick video
         plan = pick_video(plan, candidates)
-        chosen = next((c for c in candidates if c["video_id"] == plan.chosen_video_id), candidates[0])
+        chosen = next(
+            (c for c in candidates if c["video_id"] == plan.chosen_video_id),
+            candidates[0],
+        )
         runlog.set("video_source", {
             "video_id": chosen["video_id"],
             "title": chosen.get("title"),
@@ -127,12 +121,12 @@ def process_match(match: dict[str, Any], *, dry_run: bool = False) -> dict[str, 
             "views": chosen.get("views"),
         })
 
-        # --- Stage 4b: download
+        # Download
         runlog.start_stage("download")
         source_path = download(plan.chosen_video_id, plan.fallback_video_ids)
         runlog.end_stage("download")
 
-        # --- Stage 5: scene select
+        # Scene select
         runlog.start_stage("scene_detect")
         try:
             start, end = select_window(source_path)
@@ -141,18 +135,18 @@ def process_match(match: dict[str, Any], *, dry_run: bool = False) -> dict[str, 
             start, end = 0.0, 55.0
         runlog.end_stage("scene_detect")
 
-        # --- Stage 6: transcription
+        # Transcription
         runlog.start_stage("transcription")
         srt_text, _ = transcribe(source_path, start, end - start)
         srt_path = _write_srt_file(runlog.run_id, srt_text)
         runlog.end_stage("transcription")
 
-        # --- Stage 7: music
+        # Music
         runlog.start_stage("music_generation")
         music_path = generate_music(plan.music_prompt, runlog.run_id)
         runlog.end_stage("music_generation")
 
-        # --- Stage 8: overlay
+        # Overlay
         runlog.start_stage("overlay_render")
         stat_str = compose_player_stat(scorecard, plan.featured_player)
         overlay_path = render_overlay(
@@ -164,7 +158,7 @@ def process_match(match: dict[str, Any], *, dry_run: bool = False) -> dict[str, 
         )
         runlog.end_stage("overlay_render")
 
-        # --- Stage 9: edit
+        # Edit
         runlog.start_stage("editing")
         final_path = assemble(
             run_id=runlog.run_id,
@@ -176,10 +170,10 @@ def process_match(match: dict[str, Any], *, dry_run: bool = False) -> dict[str, 
         )
         runlog.end_stage("editing")
 
-        # --- Stage 10: upload
+        # Upload
         runlog.start_stage("upload")
         if dry_run:
-            result = upload(
+            upload(
                 video_path=final_path,
                 title=plan.chosen_title,
                 description=plan.description,
@@ -207,26 +201,91 @@ def process_match(match: dict[str, Any], *, dry_run: bool = False) -> dict[str, 
                     "local_path": str(final_path),
                 })
             except UploadError as exc:
-                # Partial success — keep the final file, mark run failed at upload stage only.
-                preserved = resolve_path("workspace/output") / final_path.name
                 runlog.set("output", {
                     "upload_error": str(exc),
-                    "local_path": str(preserved),
+                    "local_path": str(final_path),
                     "title_used": plan.chosen_title,
                 })
                 raise
         runlog.end_stage("upload")
 
         runlog.succeed()
-        return {"status": "success", "plan": asdict(plan), "match_id": match_id}
+        return {
+            "status": "success",
+            "player": plan.featured_player,
+            "local_path": str(final_path),
+            "run_id": runlog.run_id,
+        }
 
     except Exception as exc:  # noqa: BLE001
         runlog.fail(exc)
-        raise
+        return {
+            "status": "failed",
+            "player": plan.featured_player,
+            "error": str(exc),
+            "run_id": runlog.run_id,
+        }
     finally:
-        success = runlog._record.get("status") == "success"
         runlog.finish()
-        _cleanup_workspace(success)
+
+
+def process_match(
+    match: dict[str, Any],
+    *,
+    dry_run: bool = False,
+    count: int = 1,
+    keep_workspace: bool = False,
+) -> list[dict[str, Any]]:
+    """Run the full pipeline for one match, producing up to `count` distinct Shorts."""
+    match_id = str(match.get("match_id") or match.get("id") or "")
+
+    # Dup-skip only fires when producing a single Short — multi-short invocations
+    # intentionally let the user produce additional Shorts for the same match.
+    if count <= 1 and RunLogger().has_processed_match(match_id):
+        log.info("match %s already has a successful Short — skipping (use --count N to override).",
+                 match_id)
+        return [{"status": "skipped_duplicate", "match_id": match_id}]
+
+    # --- Data collection (once for the whole match)
+    log.info("collecting match data for %s", match_id)
+    scorecard = fetch_scorecard(match_id)
+    keywords = keywords_for_news(scorecard)
+    news = fetch_news(keywords=keywords)
+    ctx: MatchContext = build_context(scorecard, news)
+
+    # --- Plan N distinct Shorts
+    log.info("planning up to %d Short(s)", count)
+    plans = plan_shorts(ctx, n=count)
+    if not plans:
+        log.warning("no plans produced — nothing to do.")
+        return []
+
+    # --- Produce each Short (search + download + edit + upload per plan)
+    results: list[dict[str, Any]] = []
+    any_success = False
+    for i, plan in enumerate(plans, 1):
+        log.info("=" * 60)
+        log.info("Short %d/%d — player: %s", i, len(plans), plan.featured_player)
+        log.info("=" * 60)
+        result = _produce_one_short(
+            match_id=match_id,
+            scorecard=scorecard,
+            plan=plan,
+            dry_run=dry_run,
+        )
+        results.append(result)
+        if result.get("status") == "success":
+            any_success = True
+
+    _cleanup_workspace(any_success, force_keep=keep_workspace)
+    return results
+
+
+def _safe_process(match: dict[str, Any], *, dry_run: bool, count: int) -> None:
+    try:
+        process_match(match, dry_run=dry_run, count=count)
+    except Exception as exc:  # noqa: BLE001
+        log.error("match %s failed: %s", match.get("match_id"), exc)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -235,7 +294,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.watch:
         from .trigger import watch
-        watch(lambda m: _safe_process(m, dry_run=args.dry_run))
+        watch(lambda m: _safe_process(m, dry_run=args.dry_run, count=args.count))
         return 0
 
     if args.match_id:
@@ -249,18 +308,26 @@ def main(argv: list[str] | None = None) -> int:
         match = newly[0]
 
     try:
-        process_match(match, dry_run=args.dry_run)
-        return 0
+        results = process_match(
+            match,
+            dry_run=args.dry_run,
+            count=args.count,
+            keep_workspace=args.keep_workspace,
+        )
     except Exception as exc:  # noqa: BLE001
         log.error("pipeline run failed: %s", exc)
         return 1
 
-
-def _safe_process(match: dict[str, Any], *, dry_run: bool) -> None:
-    try:
-        process_match(match, dry_run=dry_run)
-    except Exception as exc:  # noqa: BLE001
-        log.error("match %s failed: %s", match.get("match_id"), exc)
+    successes = [r for r in results if r.get("status") == "success"]
+    failures = [r for r in results if r.get("status") == "failed"]
+    log.info("=" * 60)
+    log.info("DONE: %d succeeded, %d failed (%d total)",
+             len(successes), len(failures), len(results))
+    for r in successes:
+        log.info("  ✓ %s → %s", r.get("player"), r.get("local_path"))
+    for r in failures:
+        log.info("  ✗ %s — %s", r.get("player"), r.get("error"))
+    return 0 if successes else 1
 
 
 if __name__ == "__main__":

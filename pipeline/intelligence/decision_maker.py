@@ -110,6 +110,46 @@ def plan_short(ctx: MatchContext) -> ShortPlan:
     return _coerce_plan_from_llm(ctx, data)
 
 
+def plan_shorts(ctx: MatchContext, n: int = 1) -> list[ShortPlan]:
+    """Produce up to `n` distinct ShortPlans for one match, each featuring a
+    different player. Stops early if the LLM repeats or runs out of moments."""
+    if n <= 1:
+        return [plan_short(ctx)]
+
+    plans: list[ShortPlan] = []
+    used_players: set[str] = set()
+
+    for i in range(n):
+        remaining = [
+            m for m in ctx.top_moments
+            if (m.get("batsman") or m.get("bowler") or "").strip() not in used_players
+        ]
+        # If we've exhausted the ranked moment list, try top_performers once.
+        sub_moments = remaining if remaining else ctx.top_moments
+        sub_ctx = MatchContext(
+            match_summary=ctx.match_summary,
+            top_moments=sub_moments,
+            news_headlines=ctx.news_headlines,
+            top_performers=ctx.top_performers,
+            raw_scorecard=ctx.raw_scorecard,
+            match_meta=ctx.match_meta,
+        )
+        plan = plan_short(sub_ctx)
+
+        if plan.featured_player in used_players:
+            log.info(
+                "LLM repeated player %s after %d plans — stopping early.",
+                plan.featured_player, len(plans),
+            )
+            break
+
+        plans.append(plan)
+        used_players.add(plan.featured_player)
+
+    log.info("planned %d Short(s): %s", len(plans), [p.featured_player for p in plans])
+    return plans
+
+
 def pick_video(plan: ShortPlan, candidates: list[dict[str, Any]]) -> ShortPlan:
     """Decision 2: choose which YouTube candidate to download. Mutates + returns plan."""
     if not candidates:
