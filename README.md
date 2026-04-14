@@ -8,7 +8,8 @@ See [`CRICKET_SHORTS_PLAN.md`](CRICKET_SHORTS_PLAN.md) for the full design spec 
 
 - Apple Silicon Mac (M1 or later — M5 48GB recommended for `large-v3` Whisper + MusicGen)
 - `python3.12` on `$PATH` — `brew install python@3.12`
-- `ffmpeg` — `brew install ffmpeg`
+- `ffmpeg-full` — `brew install ffmpeg-full` (the plain `ffmpeg` formula is a slim build without libass, so subtitles won't render)
+- `cmake` — `brew install cmake` (required to build whisper.cpp)
 - Xcode Command Line Tools — `xcode-select --install`
 - Ollama (optional but strongly recommended) — https://ollama.com, then:
   ```
@@ -200,7 +201,11 @@ tail -1 logs/runs.jsonl | jq .
 - `Ollama not responding` — start it with `ollama serve` in another terminal
 - `whisper.cpp binary not found` — `./run.sh --bootstrap-only` to rebuild
 - `cmake not found` — `brew install cmake`, then rerun bootstrap
-- `No option name near ... subtitles=...` / subtitles silently missing — your ffmpeg was built without libass. Reinstall: `brew uninstall --ignore-dependencies ffmpeg && brew install ffmpeg`. The pipeline also auto-detects this and skips subtitles with a warning instead of crashing.
+- `No option name near ... subtitles=...` / subtitles silently missing — your ffmpeg is a slim build without libass. Homebrew's mainline `ffmpeg` formula is now slim by default; you need the full formula:
+  ```
+  brew uninstall --ignore-dependencies ffmpeg && brew install ffmpeg-full
+  ```
+  Verify: `ffmpeg -hide_banner -filters | grep -E '^ .. (ass|subtitles) '` should list both. The pipeline also auto-detects the missing filter and skips subtitles with a warning instead of crashing.
 - `Missing client_secrets.json` — only needed for real uploads, not `--dry-run`
 - `musicgen-mlx install failed` — pipeline uses silent music; not fatal
 - `No YouTube candidates found` — search failed; check internet and `youtube.preferred_channels` in `config/settings.yaml`

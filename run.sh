@@ -57,10 +57,13 @@ cleanup() {
 
 check_system_deps() {
   command -v "$PY_BIN" >/dev/null 2>&1 || die "Python 3.12 not found. Install with 'brew install python@3.12' or set PY_BIN=/path/to/python3.12."
-  command -v ffmpeg  >/dev/null 2>&1 || die "ffmpeg not found. Install with 'brew install ffmpeg'."
+  command -v ffmpeg  >/dev/null 2>&1 || die "ffmpeg not found. Install with 'brew install ffmpeg-full' (the plain 'ffmpeg' formula is slim and lacks libass — subtitles won't render)."
   command -v git     >/dev/null 2>&1 || die "git not found."
   command -v make    >/dev/null 2>&1 || die "make not found (install Xcode Command Line Tools: xcode-select --install)."
   command -v cmake   >/dev/null 2>&1 || die "cmake not found. Install with 'brew install cmake' (required by whisper.cpp)."
+  if ! ffmpeg -hide_banner -filters 2>/dev/null | grep -qE '^ .. (ass|subtitles) '; then
+    warn "ffmpeg has no libass support — subtitles will be skipped. Install the full build: 'brew uninstall --ignore-dependencies ffmpeg && brew install ffmpeg-full'."
+  fi
   if ! command -v ollama >/dev/null 2>&1; then
     warn "ollama not found in PATH. Install from https://ollama.com — the pipeline will fall back to rule-based decisions without it."
   fi
