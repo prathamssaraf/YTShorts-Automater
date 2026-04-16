@@ -1,35 +1,36 @@
-# Data collection
-feedparser>=6.0.11
+# --- Core HTTP & RSS ---
 requests>=2.32.0
+feedparser>=6.0.11
 beautifulsoup4>=4.12.0
-curl_cffi>=0.7.0        # browser-TLS fingerprint to bypass Cricinfo's Akamai WAF
 
-# YouTube API
+# --- LLM client (Ollama is local; pure HTTP) ---
+# (no extra deps — uses requests)
+
+# --- TTS (Kokoro via ONNX) ---
+kokoro-onnx>=0.4.5
+soundfile>=0.12.1
+numpy>=1.26.0,<2.2
+
+# --- Visual providers ---
+pyjwt>=2.8.0           # Kling JWT auth
+# diffusers/torch are imported lazily inside ltx_video provider — only needed
+# if you opt into the local LTX-Video fallback. Install separately:
+#   pip install "diffusers>=0.32" "transformers>=4.45" "accelerate>=1.0" \
+#               "torch>=2.4" "imageio[ffmpeg]" "huggingface_hub>=0.26"
+
+# --- YouTube upload ---
 google-api-python-client>=2.120.0
 google-auth-oauthlib>=1.2.0
 google-auth-httplib2>=0.2.0
 
-# Video / audio processing
-yt-dlp>=2024.12.13
-scenedetect[opencv]>=0.6.7
-opencv-python>=4.9.0
+# --- Pillow for any title-card/thumbnail rendering ---
 Pillow>=10.3.0
-librosa>=0.10.2
-soundfile>=0.12.1
-numpy>=1.26.0,<2.2
 
-# Scheduling / infra
-schedule>=1.2.2
-
-# Utilities
+# --- Config / utilities ---
 pyyaml>=6.0.1
 python-dotenv>=1.0.0
 tenacity>=8.3.0
 
-# MLX local inference stack (Apple Silicon)
-mlx>=0.18.0
-mlx-lm>=0.19.0
-
-# Note: whisper.cpp is compiled into ./vendor/whisper.cpp by run.sh (not a pip package)
-# Note: Ollama is a separate system app: https://ollama.com
-# Note: musicgen-mlx is optional — run.sh attempts `pip install musicgen-mlx` and continues on failure
+# Note: whisper.cpp is compiled into ./vendor/whisper.cpp by run.sh
+# Note: Ollama is a separate system app from https://ollama.com
+# Note: Kokoro ONNX model + voices are downloaded into ./vendor/kokoro by run.sh

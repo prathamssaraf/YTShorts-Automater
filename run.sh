@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Cricket YouTube Shorts — single-command entry point.
+# Story / History Shorts — single-command entry point.
 # Bootstraps a self-contained environment under this repo, runs the pipeline,
 # and (optionally) tears everything down. Nothing is installed outside this folder.
 
@@ -11,6 +11,7 @@ cd "$REPO_ROOT"
 VENV_DIR="$REPO_ROOT/.venv"
 VENDOR_DIR="$REPO_ROOT/vendor"
 WHISPER_DIR="$VENDOR_DIR/whisper.cpp"
+KOKORO_DIR="$VENDOR_DIR/kokoro"
 HF_CACHE_DIR="$VENDOR_DIR/hf_cache"
 WORKSPACE_DIR="$REPO_ROOT/workspace"
 PY_BIN="${PY_BIN:-python3.12}"
@@ -20,52 +21,58 @@ export TRANSFORMERS_CACHE="$HF_CACHE_DIR"
 export PIP_DISABLE_PIP_VERSION_CHECK=1
 export PIP_NO_INPUT=1
 
+# Forward secrets from .env if present (don't fail if missing)
+if [ -f "$REPO_ROOT/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . "$REPO_ROOT/.env"
+  set +a
+fi
+
 log() { printf "\033[1;36m[run.sh]\033[0m %s\n" "$*"; }
 warn() { printf "\033[1;33m[run.sh]\033[0m %s\n" "$*" >&2; }
 die() { printf "\033[1;31m[run.sh]\033[0m %s\n" "$*" >&2; exit 1; }
 
 usage() {
   cat <<'EOF'
-Cricket YouTube Shorts — run.sh
+YTShorts-Automater — story/history Shorts pipeline
 
 Usage:
-  ./run.sh                         Bootstrap + run once (auto-picks latest completed match)
-  ./run.sh --match-id <id>         Run for a specific cricinfo match id
-  ./run.sh --match-id <id> --count 3
-                                   Produce 3 distinct Shorts from one match
-                                   (each featuring a different player/moment)
-  ./run.sh --watch                 Run the polling trigger loop
-  ./run.sh --watch --count 3       Polling loop that makes 3 Shorts per completed match
-  ./run.sh --dry-run               Run every stage except YouTube upload
-  ./run.sh --bootstrap-only        Just set up venv + whisper.cpp, do not run
-  ./run.sh --cleanup               Remove .venv, vendor/, workspace/ (keeps source + logs)
-  ./run.sh --help                  Show this message
+  ./run.sh                          Bootstrap + run with today's "on-this-day" topic
+  ./run.sh --topic "Apollo 13"      Run for a specific topic
+  ./run.sh --dry-run                Run every stage except YouTube upload
+  ./run.sh --bootstrap-only         Just set up venv + whisper.cpp + Kokoro models
+  ./run.sh --cleanup                Remove .venv, vendor/, workspace/ (keeps source + logs)
+  ./run.sh --help                   Show this message
 
-To process several matches in a row, just shell-loop:
-  for m in 1527693 1527694 1527695; do ./run.sh --match-id "$m" --dry-run; done
+Required keys (set in .env file at repo root, OR in config/settings.yaml):
+  KLING_ACCESS_KEY                  Kling text-to-video (free, app.klingai.com/global/dev)
+  KLING_SECRET_KEY                  Kling text-to-video (free, app.klingai.com/global/dev)
+  PIXABAY_API_KEY                   OPTIONAL — background music (free, pixabay.com/api/docs/)
+
+YouTube uploads also need config/client_secrets.json (Desktop OAuth2 client).
 EOF
 }
 
 cleanup() {
   log "Tearing down local installs (leaves source + logs intact)"
-  rm -rf "$VENV_DIR"
-  rm -rf "$VENDOR_DIR"
-  rm -rf "$WORKSPACE_DIR"
-  mkdir -p "$WORKSPACE_DIR"/{downloads,clips,audio,output}
+  rm -rf "$VENV_DIR" "$VENDOR_DIR" "$WORKSPACE_DIR"
+  mkdir -p "$WORKSPACE_DIR"/{scenes,clips,audio,output}
   log "Done. Source tree + logs/ preserved."
 }
 
 check_system_deps() {
-  command -v "$PY_BIN" >/dev/null 2>&1 || die "Python 3.12 not found. Install with 'brew install python@3.12' or set PY_BIN=/path/to/python3.12."
-  command -v ffmpeg  >/dev/null 2>&1 || die "ffmpeg not found. Install with 'brew install ffmpeg-full' (the plain 'ffmpeg' formula is slim and lacks libass — subtitles won't render)."
+  command -v "$PY_BIN" >/dev/null 2>&1 || die "Python 3.12 not found. brew install python@3.12"
+  command -v ffmpeg  >/dev/null 2>&1 || die "ffmpeg not found. brew install ffmpeg-full"
   command -v git     >/dev/null 2>&1 || die "git not found."
-  command -v make    >/dev/null 2>&1 || die "make not found (install Xcode Command Line Tools: xcode-select --install)."
-  command -v cmake   >/dev/null 2>&1 || die "cmake not found. Install with 'brew install cmake' (required by whisper.cpp)."
+  command -v make    >/dev/null 2>&1 || die "make not found (xcode-select --install)."
+  command -v cmake   >/dev/null 2>&1 || die "cmake not found. brew install cmake (for whisper.cpp)."
+  command -v curl    >/dev/null 2>&1 || die "curl not found."
   if ! ffmpeg -hide_banner -filters 2>/dev/null | grep -qE '^ .. (ass|subtitles) '; then
-    warn "ffmpeg has no libass support — subtitles will be skipped. Install the full build: 'brew uninstall --ignore-dependencies ffmpeg && brew install ffmpeg-full'."
+    warn "ffmpeg has no libass — subtitles will be skipped. brew uninstall --ignore-dependencies ffmpeg && brew install ffmpeg-full"
   fi
   if ! command -v ollama >/dev/null 2>&1; then
-    warn "ollama not found in PATH. Install from https://ollama.com — the pipeline will fall back to rule-based decisions without it."
+    warn "ollama not in PATH — pipeline will use rule-based script fallback. Install from https://ollama.com"
   fi
 }
 
@@ -79,15 +86,8 @@ ensure_venv() {
   python -m pip install --upgrade pip wheel setuptools >/dev/null
   local stamp="$VENV_DIR/.requirements.stamp"
   if [ ! -f "$stamp" ] || [ "$REPO_ROOT/requirements.txt" -nt "$stamp" ]; then
-    log "Installing Python dependencies (this is a one-time cost)"
+    log "Installing Python dependencies (one-time cost)"
     pip install -r "$REPO_ROOT/requirements.txt"
-    # MusicGen-MLX is best-effort. There's no published PyPI package with that exact name,
-    # so we try two common GitHub sources and continue quietly on failure — the pipeline
-    # falls back to a silent background track.
-    log "Attempting MusicGen-MLX install (best-effort, will fall back to silent music)"
-    pip install "musicgen-mlx @ git+https://github.com/andrade0/musicgen-mlx" 2>/dev/null \
-      || pip install audiocraft 2>/dev/null \
-      || warn "No MusicGen backend installed — Shorts will be produced without background music."
     touch "$stamp"
   fi
 }
@@ -98,27 +98,37 @@ ensure_whisper_cpp() {
     log "Cloning whisper.cpp into $WHISPER_DIR"
     git clone --depth=1 https://github.com/ggerganov/whisper.cpp.git "$WHISPER_DIR"
   fi
-  if [ ! -x "$WHISPER_DIR/main" ] \
-     && [ ! -x "$WHISPER_DIR/build/bin/whisper-cli" ] \
-     && [ ! -x "$WHISPER_DIR/build/bin/main" ]; then
+  if [ ! -x "$WHISPER_DIR/main" ] && [ ! -x "$WHISPER_DIR/build/bin/whisper-cli" ]; then
     log "Building whisper.cpp with Metal acceleration (CMake)"
-    (
-      cd "$WHISPER_DIR"
-      cmake -B build -DGGML_METAL=1 -DCMAKE_BUILD_TYPE=Release
-      cmake --build build --config Release -j
-    )
+    ( cd "$WHISPER_DIR" && cmake -B build -DGGML_METAL=1 -DCMAKE_BUILD_TYPE=Release && cmake --build build --config Release -j )
   fi
-  local model_path="$WHISPER_DIR/models/ggml-base.en.bin"
-  if [ ! -f "$model_path" ]; then
-    log "Downloading whisper.cpp base.en model (~150MB — large-v3 upgrade: ./vendor/whisper.cpp/models/download-ggml-model.sh large-v3)"
+  if [ ! -f "$WHISPER_DIR/models/ggml-base.en.bin" ]; then
+    log "Downloading whisper.cpp base.en model (~150MB)"
     ( cd "$WHISPER_DIR" && bash ./models/download-ggml-model.sh base.en )
   fi
 }
 
+ensure_kokoro_models() {
+  mkdir -p "$KOKORO_DIR"
+  local model="$KOKORO_DIR/kokoro-v1.0.onnx"
+  local voices="$KOKORO_DIR/voices-v1.0.bin"
+  if [ ! -f "$model" ]; then
+    log "Downloading Kokoro TTS model (~330MB)"
+    curl -L --fail --retry 3 -o "$model" \
+      "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx"
+  fi
+  if [ ! -f "$voices" ]; then
+    log "Downloading Kokoro voice pack (~26MB)"
+    curl -L --fail --retry 3 -o "$voices" \
+      "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin"
+  fi
+}
+
 ensure_ollama_running() {
-  if ! command -v ollama >/dev/null 2>&1; then return 0; fi
+  command -v ollama >/dev/null 2>&1 || return 0
   if curl -sf "http://localhost:11434/api/tags" >/dev/null 2>&1; then return 0; fi
-  warn "Ollama not responding at localhost:11434. Start it with 'ollama serve &' in another terminal, or the pipeline will use rule-based fallback."
+  warn "Ollama not responding on localhost:11434 — pipeline will use rule-based script fallback."
+  warn "Start it: 'ollama serve &' in another terminal."
 }
 
 run_pipeline() {
@@ -131,11 +141,11 @@ MODE="run"
 PASSTHROUGH=()
 while [ $# -gt 0 ]; do
   case "$1" in
-    --help|-h)          usage; exit 0 ;;
-    --cleanup)          MODE="cleanup"; shift ;;
-    --bootstrap-only)   MODE="bootstrap"; shift ;;
-    --)                 shift; PASSTHROUGH+=("$@"); break ;;
-    *)                  PASSTHROUGH+=("$1"); shift ;;
+    --help|-h)         usage; exit 0 ;;
+    --cleanup)         MODE="cleanup"; shift ;;
+    --bootstrap-only)  MODE="bootstrap"; shift ;;
+    --)                shift; PASSTHROUGH+=("$@"); break ;;
+    *)                 PASSTHROUGH+=("$1"); shift ;;
   esac
 done
 
@@ -147,10 +157,11 @@ fi
 check_system_deps
 ensure_venv
 ensure_whisper_cpp
+ensure_kokoro_models
 ensure_ollama_running
 
 if [ "$MODE" = "bootstrap" ]; then
-  log "Bootstrap complete. Run './run.sh' to execute the pipeline."
+  log "Bootstrap complete. Run './run.sh --topic \"...\"' to make a Short."
   exit 0
 fi
 

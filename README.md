@@ -1,212 +1,150 @@
-# Cricket YouTube Shorts — one-command local pipeline
+# YTShorts-Automater — story/history Shorts on autopilot
 
-Fully local, on-device automation that turns a completed cricket match into a finished YouTube Short. No cloud AI. No subscriptions. Nothing installed outside this folder (except Homebrew's `ffmpeg` and the Ollama desktop app, which are system-level).
+Fully local pipeline that turns a topic (or "today in history") into a finished 9:16 YouTube Short with cinematic AI-generated visuals, AI-narrated voiceover, burned-in subtitles, and royalty-free background music. One command bootstraps everything; one command tears it all down.
 
-See [`CRICKET_SHORTS_PLAN.md`](CRICKET_SHORTS_PLAN.md) for the full design spec — this README only covers setup and running.
+```
+Topic → LLM script (Ollama) → per-scene video (Kling) →
+  TTS narration (Kokoro) → subtitles (whisper.cpp) →
+  music (Pixabay) → FFmpeg compose → YouTube upload
+```
 
-## Requirements
+## What you need
 
-- Apple Silicon Mac (M1 or later — M5 48GB recommended for `large-v3` Whisper + MusicGen)
-- `python3.12` on `$PATH` — `brew install python@3.12`
-- `ffmpeg-full` — `brew install ffmpeg-full` (the plain `ffmpeg` formula is a slim build without libass, so subtitles won't render)
-- `cmake` — `brew install cmake` (required to build whisper.cpp)
-- Xcode Command Line Tools — `xcode-select --install`
-- Ollama (optional but strongly recommended) — https://ollama.com, then:
-  ```
-  ollama serve &            # leave running in another terminal
-  ollama pull llama3.2      # or any model you want; update llm.model in settings.yaml
-  ```
-
-## One-command run
+### System dependencies (one-time)
 
 ```bash
-./run.sh                         # bootstrap (one time) + run one match
-./run.sh --match-id 1527693      # run for a specific Cricinfo match id
-./run.sh --dry-run               # run every stage EXCEPT YouTube upload
-./run.sh --watch                 # polling loop: fires when a match completes
-./run.sh --bootstrap-only        # just build the venv + whisper.cpp
-./run.sh --cleanup               # remove .venv, vendor/, workspace/ (keeps source + logs)
+brew install python@3.12 ffmpeg-full cmake
+xcode-select --install   # if not already installed
 ```
 
-### Finding a cricinfo match id
+> ⚠️ Use **`ffmpeg-full`**, not the slim `ffmpeg` formula. The slim build lacks libass, so subtitles silently disappear.
 
-Open the match page on espncricinfo.com and grab the 7-digit number at the end of the URL slug:
+### Local AI services (free)
 
-```
-https://www.espncricinfo.com/series/ipl-2026-1510719/.../mumbai-indians-vs-royal-challengers-bengaluru-20th-match-1527693/full-scorecard
-                                                                                                              ^^^^^^^
-```
+- **Ollama** — https://ollama.com — then `ollama pull llama3.2` (or `qwen2.5:14b` for richer scripts)
+- **Kokoro TTS** — auto-downloaded into `vendor/kokoro/` by `run.sh` (~360MB total)
+- **whisper.cpp** — auto-cloned + built into `vendor/whisper.cpp/` by `run.sh`
 
-That `1527693` is what you pass to `--match-id`.
+### API keys you need
 
-## Producing multiple videos
+| Key | Purpose | Required? | Where to get it |
+|---|---|---|---|
+| **Kling Access Key** + **Secret Key** | Video generation (66 free credits/day) | ✅ Required | https://app.klingai.com/global/dev — sign in with Google, click "API Keys", copy both |
+| **Pixabay API Key** | Background music | Optional (silent track if omitted) | https://pixabay.com/api/docs/ — sign up, key shown immediately |
+| **YouTube OAuth `client_secrets.json`** | Upload to your channel | Optional (only for non-`--dry-run`) | Google Cloud Console → Credentials → OAuth 2.0 Client ID (Desktop app) → download JSON → save as `config/client_secrets.json` |
 
-Three ways to make more than one Short:
+#### Set the keys
 
-### 1. Multiple Shorts from the **same match** (different players/moments)
+Easiest: copy the template and fill in:
 
 ```bash
-./run.sh --match-id 1527693 --count 3 --dry-run
+cp .env.example .env
+# then edit .env with your keys
 ```
 
-The LLM picks the strongest player/moment for Short #1, then re-plans with that player excluded for Short #2, and so on. If the LLM starts repeating (match didn't have enough distinct star performances) the loop stops early. Each Short gets its own `run_id`, its own `workspace/output/final_<run_id>.mp4`, and its own line in `logs/runs.jsonl`.
+`.env` is gitignored. `run.sh` auto-loads it before launching the pipeline.
 
-### 2. Multiple matches in a shell loop
+Alternative: edit `config/settings.yaml` directly under `visual.kling.access_key`, `visual.kling.secret_key`, and `music.pixabay_api_key`.
+
+## Run it
 
 ```bash
-for m in 1527693 1527686 1527679; do
-  ./run.sh --match-id "$m" --count 2 --dry-run
-done
+./run.sh                              # bootstrap + use today's on-this-day topic
+./run.sh --topic "Fall of Constantinople"
+./run.sh --topic "Apollo 13" --dry-run
+./run.sh --bootstrap-only             # set up everything, don't run
+./run.sh --cleanup                    # remove .venv/, vendor/, workspace/
 ```
 
-Six Shorts total — two per match. Each invocation does its own bootstrap check (instant after the first) and cleans its own workspace.
+First run takes ~5–10 minutes (deps install, whisper.cpp build, model downloads). Subsequent runs reuse everything.
 
-### 3. Continuous production via `--watch`
+## What happens, stage by stage
 
-```bash
-./run.sh --watch --count 3
-```
+1. **Topic resolution** — your `--topic` flag, or a random Wikipedia "on this day" event for today's date. Optionally fetches the Wikipedia summary as factual grounding.
+2. **Script writing** — Ollama (default `llama3.2`) generates a 5–8 scene script: each scene = one narration sentence + one cinematic visual prompt + ~6s duration. Constrained to use only facts from the grounding.
+3. **TTS** — Kokoro synthesises one WAV per scene; concatenated into the full narration track.
+4. **Per-scene video** — Visual Manager cascades through providers in order:
+   - **Kling** (free tier, 66 credits/day) — primary
+   - **LTX-Video** (local, optional, slow) — fallback if Kling is exhausted
+5. **Subtitles** — whisper.cpp transcribes the narration WAV; SRT is converted to a styled ASS file with bottom-aligned outlined text.
+6. **Music** — Pixabay search by mood keyword, fallback to silent track.
+7. **Compose** — FFmpeg trims/loops each scene clip to its narration duration, concats them, burns subtitles, mixes narration + music, muxes to final mp4.
+8. **Upload** — YouTube Data API v3 with OAuth (skipped in `--dry-run`).
 
-Polls ESPNcricinfo every `schedule.check_interval_minutes` (default 30 min). When a match completes, produces 3 Shorts from it. Runs forever — Ctrl+C to stop.
-
-### How many is realistic?
-
-- **Blockbuster match** (5+ standout performers) → `--count 5` works fine
-- **One-sided / low-scoring match** → `--count 2` max; the LLM will stop early rather than repeat
-
-### Summary output
-
-At the end of a multi-Short run you'll see something like:
-
-```
-DONE: 3 succeeded, 0 failed (3 total)
-  ✓ Virat Kohli    → workspace/output/final_abc123.mp4
-  ✓ Phil Salt      → workspace/output/final_def456.mp4
-  ✓ Rajat Patidar  → workspace/output/final_ghi789.mp4
-```
-
-### Duplicate-match protection
-
-A match that already has **one** successful Short in `logs/runs.jsonl` will be skipped on subsequent single-Short invocations. Passing `--count N` with `N > 1` bypasses the check — so you can always add more Shorts to a previously-processed match by re-running with `--count`.
-
-What `run.sh` does on first run:
-
-1. Creates `./.venv` with Python 3.12
-2. `pip install -r requirements.txt` (+ best-effort `musicgen-mlx`)
-3. Clones `./vendor/whisper.cpp`, builds it with `WHISPER_METAL=1`
-4. Downloads `ggml-base.en.bin` (~150MB) for Whisper — upgrade to `large-v3` with:
-   `bash vendor/whisper.cpp/models/download-ggml-model.sh large-v3`
-5. Checks Ollama is reachable at `http://localhost:11434` (warns if not)
-6. Points `HF_HOME` at `./vendor/hf_cache` so the MusicGen weights also stay in-repo
-7. Runs the pipeline
-
-Rerunning is idempotent — dependencies re-install only if `requirements.txt` changes.
-
-## Configure before you run
-
-Open `config/settings.yaml`:
-
-- `llm.model` — whatever you pulled in Ollama (default `llama3.2`)
-- `youtube.preferred_channels` — official channel IDs you trust (ICC, IPL, Cricbuzz pre-populated)
-- `upload.*` — only matters for real (non-dry-run) uploads
-
-**No YouTube API key is required.** Search uses two free sources merged:
-- Public channel RSS feeds (`https://www.youtube.com/feeds/videos.xml?channel_id=...`) for your preferred official channels
-- `yt-dlp`'s built-in search for the long tail
-
-For YouTube **uploads** you still need OAuth (no way around it):
-
-1. In Google Cloud Console → APIs & Services → Credentials, create an **OAuth 2.0 Client ID** of type "Desktop app" (enable "YouTube Data API v3" on the project first).
-2. Download the JSON and save as `config/client_secrets.json`.
-3. First real upload will open a browser window; the token lands in `config/youtube_credentials.json` and gets auto-refreshed afterwards.
-
-You can skip OAuth entirely if you only run with `--dry-run` — the pipeline produces `workspace/output/final_*.mp4` for you to upload manually.
-
-Run once without touching YouTube:
-
-```bash
-./run.sh --match-id <id> --dry-run
-```
-
-## Tearing it all down
-
-```bash
-./run.sh --cleanup
-```
-
-Removes `.venv/`, `vendor/` (whisper.cpp + HF cache), and `workspace/`. Leaves your source tree and `logs/runs.jsonl` so you keep a permanent record of what was produced. Ollama-pulled models live under `~/.ollama` and are untouched — delete them with `ollama rm <model>` if you want to reclaim that space.
-
-## Project layout
-
-```
-cricket-shorts/
-├── run.sh                     ← single entrypoint (bootstrap + run + cleanup)
-├── CRICKET_SHORTS_PLAN.md     ← full design spec
-├── requirements.txt
-├── config/
-│   └── settings.yaml
-├── pipeline/
-│   ├── orchestrator.py        ← wires stages together
-│   ├── trigger.py             ← match-end detector
-│   ├── config.py
-│   ├── data/                  ← scorecard + news + context
-│   ├── intelligence/          ← Ollama client + prompts + decision maker
-│   ├── video/                 ← search, download, scene pick, transcribe, music, overlay, edit
-│   ├── upload/                ← YouTube uploader
-│   └── logging/               ← per-run JSON log
-├── vendor/                    ← whisper.cpp + hf_cache (created by run.sh)
-├── workspace/                 ← temp files (cleared after each successful run)
-└── logs/runs.jsonl            ← permanent run history
-```
-
-## Logs
-
-Every run appends one JSON object to `logs/runs.jsonl` with match info, the LLM's reasoning, the YouTube source used, stage timings, and the final upload URL (or local path on dry-run/upload-failure). `jq` over this file is the easiest way to review what the pipeline has been shipping.
-
-## Known limitations
-
-- No AI voiceover yet — add Kokoro MLX if you want narration
-- No upload scheduling — always uploads immediately
-- No analytics feedback loop — metrics don't influence future decisions
-- Scorecard quality depends on the unofficial `cricdata` package; pipeline falls back to a rule-based plan if it breaks
-- Must verify copyright on non-CC YouTube sources — that's your responsibility
-
-## Output locations
+## Output
 
 | File | What it is |
 |---|---|
-| `workspace/output/final_<run_id>.mp4` | The finished 1080×1920 Short (one per successful run) |
-| `workspace/downloads/<video_id>.mp4` | Raw yt-dlp download (temp, cleared after a successful run) |
-| `workspace/clips/<run_id>_*.mp4` | Intermediate cuts: trim → portrait → subs → overlay (temp) |
-| `workspace/clips/<run_id>.srt` / `.ass` | Whisper transcript + styled subtitle file (temp) |
-| `workspace/audio/<run_id>_music.wav` | MusicGen output or silent track (temp) |
-| `logs/runs.jsonl` | Permanent append-only log, one JSON object per Short |
+| `workspace/output/final_<run_id>.mp4` | The finished 1080×1920 Short |
+| `workspace/scenes/<run_id>/scene_NN.mp4` | Per-scene Kling clips (kept on failure) |
+| `workspace/audio/<run_id>/scene_NN.wav` + `narration.wav` | TTS audio (kept on failure) |
+| `workspace/clips/<run_id>.srt` | Whisper transcript (kept on failure) |
+| `logs/runs.jsonl` | Permanent append-only log, one JSON object per run |
 
-`run_id` is the UUID shown in the log line `run <uuid> recorded (success|failed)`. It is **not** the cricinfo match id — one match with `--count 3` produces three different `run_id`s.
+`run_id` is the UUID printed in the log line `run <uuid> recorded (success|failed)`.
 
-Open the most recent Short:
-
+Open the latest Short:
 ```bash
 ls -t workspace/output/*.mp4 | head -1 | xargs open
 ```
 
 Inspect the latest run log:
-
 ```bash
 tail -1 logs/runs.jsonl | jq .
 ```
 
+## Free-tier capacity
+
+A typical 50s Short uses 8 × 5s Kling clips. Kling free tier = 66 credits/day, ~6 clips/day → roughly **one full Short per day on the free tier**.
+
+To go beyond:
+- Set `visual.ltx_video.enabled: true` and `pip install diffusers torch transformers accelerate imageio` to enable the local fallback (slow, ~30s–2min per clip but unlimited).
+- Or top up Kling credits for ~$10/month.
+
+## Cleanup
+
+```bash
+./run.sh --cleanup
+```
+
+Removes `.venv/`, `vendor/`, and `workspace/` — leaves your source, `logs/`, and `.env`.
+
+## Project layout
+
+```
+YTShorts-Automater/
+├── run.sh                       single entrypoint
+├── requirements.txt
+├── .env.example                 copy → .env, fill in your keys
+├── config/
+│   └── settings.yaml            all tunables
+├── pipeline/
+│   ├── orchestrator.py          wires stages together
+│   ├── topic_source.py          CLI topic + today-in-history + Wikipedia grounding
+│   ├── intelligence/            Ollama client + script writer + prompts
+│   ├── visual/                  Kling provider + LTX-Video provider + manager
+│   ├── audio/                   Kokoro TTS + Pixabay music
+│   ├── video/                   composer + transcriber
+│   ├── upload/                  YouTube uploader
+│   └── logging/                 per-run JSON log
+├── vendor/                      whisper.cpp + Kokoro models + HF cache (gitignored)
+├── workspace/                   intermediate files (gitignored)
+└── logs/runs.jsonl              permanent run history
+```
+
 ## Troubleshooting
 
-- `Ollama not responding` — start it with `ollama serve` in another terminal
-- `whisper.cpp binary not found` — `./run.sh --bootstrap-only` to rebuild
-- `cmake not found` — `brew install cmake`, then rerun bootstrap
-- `No option name near ... subtitles=...` / subtitles silently missing — your ffmpeg is a slim build without libass. Homebrew's mainline `ffmpeg` formula is now slim by default; you need the full formula:
-  ```
-  brew uninstall --ignore-dependencies ffmpeg && brew install ffmpeg-full
-  ```
-  Verify: `ffmpeg -hide_banner -filters | grep -E '^ .. (ass|subtitles) '` should list both. The pipeline also auto-detects the missing filter and skips subtitles with a warning instead of crashing.
-- `Missing client_secrets.json` — only needed for real uploads, not `--dry-run`
-- `musicgen-mlx install failed` — pipeline uses silent music; not fatal
-- `No YouTube candidates found` — search failed; check internet and `youtube.preferred_channels` in `config/settings.yaml`
-- `match X already has a successful Short — skipping` — pass `--count N` (with N ≥ 2) to produce additional Shorts for a match already in the log
+| Error | Fix |
+|---|---|
+| `Kling not configured` | Set `KLING_ACCESS_KEY` + `KLING_SECRET_KEY` in `.env` (free, instant signup) |
+| `Kokoro model files missing` | `./run.sh --bootstrap-only` |
+| `Ollama not responding` | `ollama serve &` in another terminal |
+| `whisper.cpp binary not found` | `./run.sh --bootstrap-only` to rebuild |
+| Subtitles silently missing | `brew uninstall --ignore-dependencies ffmpeg && brew install ffmpeg-full` |
+| `cmake not found` | `brew install cmake` |
+| `Missing client_secrets.json` | Only needed for real uploads (not `--dry-run`) — see "API keys" above |
+| Kling "task failed" / quota error | Free tier exhausted for the day; wait 24h or enable LTX-Video fallback |
+
+## License
+
+MIT — do whatever you want.

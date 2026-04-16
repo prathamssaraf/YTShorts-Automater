@@ -1,6 +1,7 @@
-"""Loads and validates settings.yaml. One place for config access."""
+"""Loads settings.yaml + overlays env-var secrets."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -12,8 +13,20 @@ _SETTINGS_PATH = REPO_ROOT / "config" / "settings.yaml"
 _cache: dict[str, Any] | None = None
 
 
+def _apply_env_overrides(data: dict[str, Any]) -> None:
+    """Pull secrets from env vars so users can `export KEY=...` instead of editing yaml."""
+    visual = data.setdefault("visual", {})
+    kling = visual.setdefault("kling", {})
+    if os.environ.get("KLING_ACCESS_KEY"):
+        kling["access_key"] = os.environ["KLING_ACCESS_KEY"]
+    if os.environ.get("KLING_SECRET_KEY"):
+        kling["secret_key"] = os.environ["KLING_SECRET_KEY"]
+    music = data.setdefault("music", {})
+    if os.environ.get("PIXABAY_API_KEY"):
+        music["pixabay_api_key"] = os.environ["PIXABAY_API_KEY"]
+
+
 def load_settings(path: Path | None = None) -> dict[str, Any]:
-    """Return the parsed settings dict, caching on first load."""
     global _cache
     if _cache is not None and path is None:
         return _cache
@@ -22,12 +35,12 @@ def load_settings(path: Path | None = None) -> dict[str, Any]:
         raise FileNotFoundError(f"Settings file not found: {target}")
     with target.open("r", encoding="utf-8") as fh:
         data = yaml.safe_load(fh) or {}
+    _apply_env_overrides(data)
     if path is None:
         _cache = data
     return data
 
 
 def resolve_path(value: str | Path) -> Path:
-    """Resolve a config path relative to REPO_ROOT if not absolute."""
     p = Path(value)
     return p if p.is_absolute() else (REPO_ROOT / p)

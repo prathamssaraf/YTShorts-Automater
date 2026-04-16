@@ -1,95 +1,105 @@
-# Cricket YouTube Shorts — central configuration
-# All paths are resolved relative to the repository root unless absolute.
+# Story / History Shorts pipeline — central configuration
+# Paths are resolved relative to repo root unless absolute.
 
-schedule:
-  check_interval_minutes: 30
-  ipl_series_id: "ipl-2026-1510719"
-
-data:
-  espncricinfo_rss: "https://www.espncricinfo.com/rss/content/story/feeds/6.xml"
-  cricbuzz_rss: "https://www.cricbuzz.com/rss-feeds/cricket-news"
-  news_max_articles: 10
-  news_recency_hours: 6
-  scorecard_innings_limit: 2
-  marquee_players:
-    - "Virat Kohli"
-    - "Rohit Sharma"
-    - "MS Dhoni"
-    - "Jasprit Bumrah"
-    - "Hardik Pandya"
-    - "Ravindra Jadeja"
-    - "KL Rahul"
-    - "Suryakumar Yadav"
-    - "Rishabh Pant"
-    - "Shubman Gill"
-    - "Rashid Khan"
-    - "Mohammed Siraj"
-
-youtube:
-  # Search backend is API-key-free: channel RSS feeds + yt-dlp search merged.
-  # OAuth (config/client_secrets.json) is only needed for the UPLOAD step.
-  search_results_to_evaluate: 8
-  preferred_channels:                         # polled via public RSS, no key needed
-    - "UCiWrjBhlICf_L_RK5y6Vrxw"              # ICC
-    - "UCmqvKoNO1bECOHEMqwTUQMQ"              # IPL
-    - "UCXd3xVxSfGQFJsKGmqC9fVQ"              # Cricbuzz
-  min_views: 5000
-  max_duration_seconds: 300
-  cache_file: "workspace/youtube_search_cache.json"
-  cache_ttl_seconds: 7200
-
-downloader:
-  format: "bestvideo[height<=1080]+bestaudio/best"
-  output_template: "workspace/downloads/%(id)s.%(ext)s"
-  rate_limit: "5M"
-  retries: 3
-
-video:
-  output_resolution: [1080, 1920]
-  target_duration_seconds: 55
-  min_clip_duration_seconds: 15
-  max_clip_duration_seconds: 55
-  subtitle_font_size: 48
-  subtitle_font: "Arial-Bold"
-  subtitle_position: "bottom"
-  overlay_position: "top"
-  overlay_opacity: 0.85
-  music_volume: 0.20
-  commentary_volume: 1.0
-
-transcription:
+# --- Topic input ---
+topic:
+  default_topic: ""                          # if empty + no CLI arg, today_in_history is used
   language: "en"
-  output_format: "srt"
-  whisper_cpp_binary: "vendor/whisper.cpp/main"
-  whisper_model_path: "vendor/whisper.cpp/models/ggml-large-v3.bin"
-  fallback_model_path: "vendor/whisper.cpp/models/ggml-base.en.bin"
+  use_wikipedia_grounding: true              # fetch Wikipedia summary to ground the LLM
 
-music:
-  model: "facebook/musicgen-small"
-  duration_seconds: 60
-  prompt_template: "energetic cricket sports hype music, {mood}, no lyrics, background"
-  output_dir: "workspace/audio"
-
+# --- LLM (script writing) ---
 llm:
   host: "http://localhost:11434"
-  model: "llama3.2"                           # override via settings if you pulled another
+  model: "llama3.2"                          # or qwen2.5:14b for richer scripts
   fallback_model: "llama3.2"
-  temperature: 0.3
-  max_tokens: 1000
-  request_timeout_seconds: 120
+  temperature: 0.6
+  max_tokens: 1500
+  request_timeout_seconds: 180
   json_retries: 3
 
+# --- Script structure ---
+script:
+  total_duration_seconds: 50                 # aim for under 60s
+  scenes_min: 5
+  scenes_max: 8
+  scene_duration_seconds: 6                  # what we ask the visual provider for
+  visual_style: "cinematic, dramatic lighting, photorealistic, film grain, 35mm"
+  reading_speed_wpm: 155                     # used to budget script length
+
+# --- TTS (Kokoro) ---
+tts:
+  voice: "af_heart"                          # see vendor/kokoro/voices.bin for full list
+  speed: 1.05                                # 0.5 - 2.0
+  language: "en-us"
+  model_path: "vendor/kokoro/kokoro-v1.0.onnx"
+  voices_path: "vendor/kokoro/voices-v1.0.bin"
+  output_dir: "workspace/audio"
+
+# --- Visual providers (cascade in order) ---
+visual:
+  output_resolution: [1080, 1920]            # 9:16 portrait
+  aspect_ratio: "9:16"
+  scene_dir: "workspace/scenes"
+  providers:                                 # tried in order; first success wins
+    - "kling"
+    - "ltx_video"
+
+  kling:
+    enabled: true
+    access_key: ""                           # from app.klingai.com/global/dev
+    secret_key: ""                           # ditto — both required
+    model_name: "kling-v1-6"                 # also: kling-v1, kling-v1-5, kling-v2-0, kling-2-5-turbo
+    mode: "std"                              # "std" (cheaper) or "pro" (higher quality)
+    duration_seconds: 5                      # 5 or 10
+    base_url: "https://api-singapore.klingai.com"
+    poll_interval_seconds: 10
+    poll_timeout_seconds: 600
+
+  ltx_video:                                  # local fallback when Kling quota is gone
+    enabled: false                            # flip true after `pip install` the optional ltx deps
+    model_id: "Lightricks/LTX-Video"
+    num_frames: 121                           # 5s @ 24fps
+    num_inference_steps: 40
+    cache_dir: "vendor/hf_cache"
+
+# --- Background music ---
+music:
+  source: "pixabay"                           # pixabay | silence
+  pixabay_api_key: ""                         # from pixabay.com/api/docs/  (optional)
+  pixabay_query_template: "{mood} cinematic instrumental"
+  volume: 0.18                                # relative to narration
+  output_dir: "workspace/audio"
+
+# --- Subtitles (whisper.cpp on the TTS audio) ---
+transcription:
+  language: "en"
+  whisper_cpp_binary: "vendor/whisper.cpp/main"
+  whisper_model_path: "vendor/whisper.cpp/models/ggml-base.en.bin"
+  fallback_model_path: "vendor/whisper.cpp/models/ggml-base.en.bin"
+
+# --- Composer (FFmpeg) ---
+composer:
+  output_resolution: [1080, 1920]
+  fps: 30
+  scene_crossfade_seconds: 0.4
+  subtitle_font_size: 56
+  narration_volume: 1.0
+  burn_subtitles: true                        # auto-skips if ffmpeg lacks libass
+  workspace_dir: "workspace/clips"
+  output_dir: "workspace/output"
+
+# --- YouTube upload ---
 upload:
   credentials_file: "config/youtube_credentials.json"
   client_secrets_file: "config/client_secrets.json"
-  category_id: "17"                           # Sports
-  privacy_status: "public"                    # public | unlisted | private
+  category_id: "27"                           # Education
+  privacy_status: "public"
   made_for_kids: false
   tags_max: 15
-  description_footer: "\n\nAll cricket content for entertainment purposes. #Shorts #Cricket #IPL2026"
+  description_footer: "\n\n#Shorts #History #StoryTime"
 
+# --- Logging ---
 logging:
   log_file: "logs/runs.jsonl"
   keep_workspace_on_failure: true
   keep_workspace_on_success: false
-  state_file: "workspace/last_match_state.json"
