@@ -60,7 +60,7 @@ class WanLocalProvider(VisualProvider):
         log.info("Wan 2.1: converting %s → %s (first-time download, ~5GB)", self.hf_model, self.model_dir)
         self.model_dir.mkdir(parents=True, exist_ok=True)
         cmd = [
-            sys.executable, "-m", "mlx_video.wan_2.convert",
+            sys.executable, "-m", "mlx_video.models.wan_2.convert",
             "--model-name", self.hf_model,
             "--output-dir", str(self.model_dir),
         ]
@@ -85,7 +85,7 @@ class WanLocalProvider(VisualProvider):
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
         cmd = [
-            sys.executable, "-m", "mlx_video.wan_2.generate",
+            sys.executable, "-m", "mlx_video.models.wan_2.generate",
             "--model-dir", str(self.model_dir),
             "--prompt", prompt,
             "--num-frames", str(num_frames),
