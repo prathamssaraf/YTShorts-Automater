@@ -57,18 +57,38 @@ class WanLocalProvider(VisualProvider):
         marker = self.model_dir / "config.json"
         if marker.exists():
             return
-        log.info("Wan 2.1: converting %s → %s (first-time download, ~5GB)", self.hf_model, self.model_dir)
+
+        # Step 1: download HuggingFace weights
+        hf_cache = resolve_path("vendor/wan21_hf")
+        hf_marker = hf_cache / "config.json"
+        if not hf_marker.exists():
+            log.info("Wan 2.1: downloading %s (~5GB, one-time)", self.hf_model)
+            hf_cache.mkdir(parents=True, exist_ok=True)
+            dl_cmd = [
+                sys.executable, "-c",
+                f"from huggingface_hub import snapshot_download; "
+                f"snapshot_download('{self.hf_model}', local_dir='{hf_cache}')",
+            ]
+            result = subprocess.run(dl_cmd, capture_output=True, text=True, check=False, timeout=3600)
+            if result.returncode != 0:
+                raise WanLocalError(f"model download failed: {result.stderr[-600:]}")
+            if not hf_marker.exists():
+                raise WanLocalError(f"download completed but {hf_marker} not found")
+            log.info("Wan 2.1: download complete at %s", hf_cache)
+
+        # Step 2: convert to MLX format
+        log.info("Wan 2.1: converting to MLX format at %s", self.model_dir)
         self.model_dir.mkdir(parents=True, exist_ok=True)
         cmd = [
             sys.executable, "-m", "mlx_video.models.wan_2.convert",
-            "--model-name", self.hf_model,
+            "--checkpoint-dir", str(hf_cache),
             "--output-dir", str(self.model_dir),
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=1800)
         if result.returncode != 0:
             raise WanLocalError(f"model conversion failed: {result.stderr[-600:]}")
         if not marker.exists():
-            raise WanLocalError(f"conversion ran but {marker} not found — check output above")
+            raise WanLocalError(f"conversion ran but {marker} not found — check stderr above")
         log.info("Wan 2.1: model ready at %s", self.model_dir)
 
     def generate(self, *, prompt: str, duration_seconds: float, out_path: Path) -> Path:
