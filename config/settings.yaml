@@ -41,8 +41,18 @@ visual:
   aspect_ratio: "9:16"
   scene_dir: "workspace/scenes"
   providers:                                 # tried in order; first success wins
+    - "fal"
     - "kling"
     - "ltx_video"
+
+  fal:
+    enabled: true
+    api_key: ""                              # from fal.ai/dashboard/keys — or set FAL_KEY in .env
+    model: "bytedance/seedance-2.0/text-to-video"    # also: fal-ai/kling-video/v1.6/standard/text-to-video
+    duration_seconds: 5
+    resolution: "720p"                       # 480p or 720p for Seedance
+    poll_interval_seconds: 5
+    poll_timeout_seconds: 600
 
   kling:
     enabled: true

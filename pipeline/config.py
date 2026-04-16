@@ -21,6 +21,9 @@ def _apply_env_overrides(data: dict[str, Any]) -> None:
         kling["access_key"] = os.environ["KLING_ACCESS_KEY"]
     if os.environ.get("KLING_SECRET_KEY"):
         kling["secret_key"] = os.environ["KLING_SECRET_KEY"]
+    fal = visual.setdefault("fal", {})
+    if os.environ.get("FAL_KEY"):
+        fal["api_key"] = os.environ["FAL_KEY"]
     music = data.setdefault("music", {})
     if os.environ.get("PIXABAY_API_KEY"):
         music["pixabay_api_key"] = os.environ["PIXABAY_API_KEY"]
