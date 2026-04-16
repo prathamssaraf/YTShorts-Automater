@@ -9,6 +9,7 @@ from .base import VisualProvider
 from .fal_provider import FalProvider
 from .kling import KlingProvider
 from .ltx_video import LTXVideoProvider
+from .wan_local import WanLocalProvider
 
 log = logging.getLogger(__name__)
 
@@ -16,6 +17,7 @@ _REGISTRY: dict[str, type[VisualProvider]] = {
     "fal": FalProvider,
     "kling": KlingProvider,
     "ltx_video": LTXVideoProvider,
+    "wan_local": WanLocalProvider,
 }
 
 

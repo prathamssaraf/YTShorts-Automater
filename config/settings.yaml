@@ -41,6 +41,7 @@ visual:
   aspect_ratio: "9:16"
   scene_dir: "workspace/scenes"
   providers:                                 # tried in order; first success wins
+    - "wan_local"
     - "fal"
     - "kling"
     - "ltx_video"
@@ -64,6 +65,17 @@ visual:
     base_url: "https://api-singapore.klingai.com"
     poll_interval_seconds: 10
     poll_timeout_seconds: 600
+
+  wan_local:
+    enabled: true
+    hf_model: "Wan-AI/Wan2.1-T2V-1.3B"       # 1.3B=fast(~3min/clip), 14B=quality(~15min/clip)
+    model_dir: "vendor/wan21_mlx"
+    width: 480                                 # 9:16 portrait at 480p
+    height: 848
+    fps: 16                                    # wan default; 16 or 24
+    num_inference_steps: 30                    # lower=faster, 20-50 range
+    guidance_scale: 5.0
+    generate_timeout_seconds: 900              # 15 min max per clip
 
   ltx_video:                                  # local fallback when Kling quota is gone
     enabled: false                            # flip true after `pip install` the optional ltx deps

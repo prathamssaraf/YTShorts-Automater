@@ -88,6 +88,9 @@ ensure_venv() {
   if [ ! -f "$stamp" ] || [ "$REPO_ROOT/requirements.txt" -nt "$stamp" ]; then
     log "Installing Python dependencies (one-time cost)"
     pip install -r "$REPO_ROOT/requirements.txt"
+    # mlx-video: Wan 2.1 local video generation on Apple Silicon
+    log "Installing mlx-video (Wan 2.1 local video gen)"
+    pip install "git+https://github.com/Blaizzy/mlx-video.git" || warn "mlx-video install failed — local video gen will be unavailable"
     touch "$stamp"
   fi
 }
